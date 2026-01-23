@@ -8,6 +8,9 @@ import 'package:flutter_map_cache/flutter_map_cache.dart';
 import 'package:dio/dio.dart';
 import 'package:dio_cache_interceptor/dio_cache_interceptor.dart'; 
 
+// IMPORT YOUR SHEET SERVICE
+import 'sheet_service.dart'; 
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const MyApp());
@@ -19,7 +22,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'NAP Box Locator',
+      title: 'NAP Finder',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
@@ -58,36 +61,39 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _loadData() async {
-    try {
-      final String response = await rootBundle.loadString('assets/lcp_data.json');
-      final List<dynamic> data = json.decode(response);
+    // 1. Try fetching from Google Sheets (Online) or Cache
+    List<dynamic> data = await SheetService().fetchLcpData();
+
+    if (mounted) {
       setState(() {
         _allLcps = data;
         _resetToOverview(); 
       });
-    } catch (e) {
-      debugPrint("Error loading data: $e");
+      
+      if (data.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Map updated! Loaded ${data.length} LCPs."),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     }
   }
 
-  Color _getStatusColor(String status) {
-    switch (status) {
-      case 'Migrated': return Colors.green;
-      case 'Pending': return Colors.red;
-      case 'Partially Migrated': return Colors.orange;
+  // --- NEW COLOR LOGIC FOR OLT BLOCKS ---
+  Color _getOltColor(int? oltId) {
+    switch (oltId) {
+      case 1: return Colors.blue.shade700;   // OLT 1 (Columns A-N)
+      case 2: return Colors.orange.shade800; // OLT 2 (Columns P-AC)
+      case 3: return Colors.purple.shade700; // OLT 3 (Columns AE-AR)
       default: return Colors.grey;
     }
   }
 
-  // --- SAFETY CHECKER ---
-  // This prevents the "NaN" crash by ensuring coordinates are real numbers
-  bool _isValidLatLng(dynamic lat, dynamic lng) {
-    if (lat is! num || lng is! num) return false;
-    if (lat.isNaN || lng.isNaN) return false;
-    if (lat.isInfinite || lng.isInfinite) return false;
-    // Optional: Filter out 0,0 if that's invalid for your area
-    if (lat == 0 && lng == 0) return false; 
-    return true;
+  String _getOltLabel(int? oltId) {
+    return "OLT ${oltId ?? '?'}";
   }
 
   // --- 1. OVERVIEW MODE ---
@@ -106,8 +112,8 @@ class _MapScreenState extends State<MapScreen> {
       if (lcp['nps'] != null && lcp['nps'].isNotEmpty) {
         var firstNp = lcp['nps'][0];
         
-        // SAFEGUARD: Skip if coordinates are bad
-        if (!_isValidLatLng(firstNp['lat'], firstNp['lng'])) continue;
+        // Use OLT Color instead of Status Color
+        Color markerColor = _getOltColor(lcp['olt_id']);
 
         markers.add(
           Marker(
@@ -118,7 +124,7 @@ class _MapScreenState extends State<MapScreen> {
               onTap: () => _focusOnLcp(lcp), 
               child: Icon(
                 Icons.location_on, 
-                color: _getStatusColor(lcp['status']), 
+                color: markerColor, 
                 size: 45
               ),
             ),
@@ -139,11 +145,9 @@ class _MapScreenState extends State<MapScreen> {
 
     List<Marker> npMarkers = [];
     List<LatLng> pointsForBounds = [];
+    Color oltColor = _getOltColor(lcp['olt_id']);
 
     for (var np in lcp['nps']) {
-      // SAFEGUARD: Skip bad points
-      if (!_isValidLatLng(np['lat'], np['lng'])) continue;
-
       double lat = np['lat'];
       double lng = np['lng'];
       LatLng pos = LatLng(lat, lng);
@@ -155,7 +159,7 @@ class _MapScreenState extends State<MapScreen> {
           width: 80, 
           height: 60,
           child: GestureDetector(
-            onTap: () => _showNpDetailsBottomSheet(lcp, np),
+            onTap: () => _showDetailedSheet(lcp), // Open NEW Detail Sheet
             child: Column(
               children: [
                 Container(
@@ -163,7 +167,7 @@ class _MapScreenState extends State<MapScreen> {
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(4),
-                    border: Border.all(color: Colors.black12),
+                    border: Border.all(color: Colors.black26),
                   ),
                   child: Text(
                     np['name'],
@@ -172,7 +176,7 @@ class _MapScreenState extends State<MapScreen> {
                 ),
                 Icon(
                   Icons.radio_button_checked,
-                  color: _getStatusColor(lcp['status']), 
+                  color: oltColor, 
                   size: 30
                 ),
               ],
@@ -184,7 +188,6 @@ class _MapScreenState extends State<MapScreen> {
 
     setState(() => _markers = npMarkers);
 
-    // --- CRASH FIX: HANDLE SINGLE POINTS SAFELY ---
     if (pointsForBounds.isNotEmpty) {
        double minLat = pointsForBounds.first.latitude;
        double maxLat = pointsForBounds.first.latitude;
@@ -198,12 +201,9 @@ class _MapScreenState extends State<MapScreen> {
          if (p.longitude > maxLng) maxLng = p.longitude;
        }
        
-       // IF ALL POINTS ARE THE SAME (Single NP), DO NOT USE BOUNDS
-       // Using bounds on a single point causes the "Infinity" crash.
-       if (minLat == maxLat && minLng == maxLng) {
+       if ((maxLat - minLat).abs() < 0.0001 && (maxLng - minLng).abs() < 0.0001) {
           _mapController.move(LatLng(minLat, minLng), 18.0);
        } else {
-          // Only use fitCamera if we actually have an area
           _mapController.fitCamera(
             CameraFit.bounds(
               bounds: LatLngBounds(LatLng(minLat, minLng), LatLng(maxLat, maxLng)),
@@ -213,58 +213,96 @@ class _MapScreenState extends State<MapScreen> {
        }
     }
     
-    _showLcpListBottomSheet(lcp);
+    _showDetailedSheet(lcp);
   }
 
-  // --- 3. BOTTOM SHEETS ---
-  void _showLcpListBottomSheet(dynamic lcp) {
+  // --- 3. NEW DETAILED BOTTOM SHEET ---
+  void _showDetailedSheet(dynamic lcp) {
+    Color themeColor = _getOltColor(lcp['olt_id']);
+    Map<String, dynamic> details = lcp['details'] ?? {};
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) {
         return DraggableScrollableSheet(
-          initialChildSize: 0.4,
-          minChildSize: 0.2,
-          maxChildSize: 0.6,
+          initialChildSize: 0.5,
+          minChildSize: 0.3,
+          maxChildSize: 0.85,
           builder: (context, scrollController) {
-            return _buildSheetContainer(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+            return Container(
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                boxShadow: [BoxShadow(blurRadius: 10, color: Colors.black26)],
+              ),
+              padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+              child: ListView(
+                controller: scrollController,
                 children: [
-                  _buildHandle(),
+                  Center(child: Container(width: 40, height: 4, color: Colors.grey[300])),
                   const SizedBox(height: 15),
-                  Text(lcp['lcp_name'], style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                  
+                  // HEADER: LCP Name & OLT Badge
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Text(lcp['lcp_name'], 
+                          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: themeColor,
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(_getOltLabel(lcp['olt_id']), 
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ),
                   Text(lcp['site_name'], style: TextStyle(color: Colors.grey[600], fontSize: 16)),
+                  const Divider(height: 30),
+
+                  // DATA GRID: ODF, Date, Rack, etc.
+                  _buildSectionTitle("Patching Details", themeColor),
                   const SizedBox(height: 10),
-                  Chip(
-                    label: Text(lcp['status'], style: const TextStyle(color: Colors.white)),
-                    backgroundColor: _getStatusColor(lcp['status']),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      _buildDetailCard("ODF", details['ODF']),
+                      _buildDetailCard("ODF Port", details['ODF Port']),
+                      _buildDetailCard("New ODF", details['New ODF']),
+                      _buildDetailCard("New Port", details['New Port']),
+                      _buildDetailCard("Rack ID", details['Rack ID']),
+                      _buildDetailCard("Date/NMP", details['Date'], isWide: true),
+                      _buildDetailCard("Distance", details['Distance']),
+                    ],
                   ),
-                  const Divider(),
-                  const Padding(
-                    padding: EdgeInsets.only(bottom: 8.0),
-                    child: Text("All Network Points:", style: TextStyle(fontWeight: FontWeight.bold)),
-                  ),
-                  Expanded(
-                    child: ListView.builder(
-                      controller: scrollController,
-                      itemCount: lcp['nps'].length,
-                      itemBuilder: (context, index) {
-                        var np = lcp['nps'][index];
-                        return ListTile(
-                          leading: const Icon(Icons.location_on, size: 20),
-                          title: Text(np['name']),
-                          subtitle: Text("${np['lat']}, ${np['lng']}"),
-                          dense: true,
-                          onTap: () {
-                             Navigator.pop(context); 
-                             _showNpDetailsBottomSheet(lcp, np); 
-                          },
+
+                  const SizedBox(height: 20),
+                  _buildSectionTitle("Coordinates", themeColor),
+                  ...lcp['nps'].map<Widget>((np) => ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.location_on_outlined, color: themeColor),
+                    title: Text(np['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text("${np['lat']}, ${np['lng']}"),
+                    dense: true,
+                    trailing: IconButton(
+                      icon: const Icon(Icons.copy, size: 18),
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: "${np['lat']}, ${np['lng']}"));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text("Coordinates copied!"), duration: Duration(seconds: 1)),
                         );
                       },
                     ),
-                  ),
+                  )).toList(),
+                  
+                  const SizedBox(height: 40),
                 ],
               ),
             );
@@ -274,139 +312,33 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  void _showNpDetailsBottomSheet(dynamic lcp, dynamic np) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true, 
-      backgroundColor: Colors.transparent,
-      builder: (context) {
-        return Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-            boxShadow: [BoxShadow(blurRadius: 10, color: Colors.black26)],
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-          child: SafeArea( 
-            child: Column(
-              mainAxisSize: MainAxisSize.min, 
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildHandle(),
-                const SizedBox(height: 15),
-                Flexible(
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: Colors.blue[50], 
-                                borderRadius: BorderRadius.circular(8)
-                              ),
-                              child: Icon(Icons.radio_button_checked, color: _getStatusColor(lcp['status']), size: 30),
-                            ),
-                            const SizedBox(width: 15),
-                            Expanded( 
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(np['name'], style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-                                  Text("Part of ${lcp['lcp_name']}", style: TextStyle(color: Colors.grey[600], fontSize: 14)),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 20),
-                        _buildInfoRow(Icons.place, "Location", lcp['site_name']),
-                        const SizedBox(height: 10),
-                        _buildInfoRow(
-                          Icons.map, 
-                          "Coordinates", 
-                          "${np['lat']}, ${np['lng']}",
-                          isCopyable: true
-                        ),
-                        const SizedBox(height: 10),
-                        _buildInfoRow(Icons.info_outline, "Status", lcp['status']),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                       Navigator.pop(context); 
-                       _showLcpListBottomSheet(lcp); 
-                    },
-                    icon: const Icon(Icons.list),
-                    label: const Text("View All Points in this LCP"),
-                  ),
-                )
-              ],
-            ),
-          ),
-        );
-      },
-    );
+  Widget _buildSectionTitle(String title, Color color) {
+    return Row(children: [
+      Icon(Icons.info, size: 16, color: color),
+      const SizedBox(width: 6),
+      Text(title, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 14)),
+    ]);
   }
 
-  Widget _buildSheetContainer({required Widget child}) {
+  Widget _buildDetailCard(String label, String? value, {bool isWide = false}) {
+    String displayValue = (value == null || value.isEmpty) ? "-" : value;
+    
     return Container(
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        boxShadow: [BoxShadow(blurRadius: 10, color: Colors.black26)],
+      width: isWide ? double.infinity : 100, // Wide items take full width
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey[200]!),
       ),
-      padding: const EdgeInsets.all(16),
-      child: child,
-    );
-  }
-
-  Widget _buildHandle() {
-    return Center(
-      child: Container(width: 40, height: 4, 
-        decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2))),
-    );
-  }
-
-  Widget _buildInfoRow(IconData icon, String label, String value, {bool isCopyable = false}) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(icon, size: 20, color: Colors.grey[600]),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-              Text(value, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
-            ],
-          ),
-        ),
-        if (isCopyable)
-          IconButton(
-            icon: const Icon(Icons.copy, size: 20, color: Colors.blueGrey),
-            tooltip: "Copy Coordinates",
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: value));
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text("Coordinates copied!"),
-                  duration: Duration(seconds: 1),
-                ),
-              );
-            },
-          ),
-      ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 2),
+          Text(displayValue, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500), maxLines: 2, overflow: TextOverflow.ellipsis),
+        ],
+      ),
     );
   }
 
@@ -420,7 +352,10 @@ class _MapScreenState extends State<MapScreen> {
     final filtered = _allLcps.where((lcp) {
       final name = lcp['lcp_name'].toString().toLowerCase();
       final site = lcp['site_name'].toString().toLowerCase();
-      return name.contains(query.toLowerCase()) || site.contains(query.toLowerCase());
+      final olt = "olt ${lcp['olt_id']}";
+      return name.contains(query.toLowerCase()) || 
+             site.contains(query.toLowerCase()) || 
+             olt.contains(query.toLowerCase());
     }).toList();
 
     setState(() => _searchResults = filtered);
@@ -465,7 +400,7 @@ class _MapScreenState extends State<MapScreen> {
                     return Container(
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(20),
-                        color: Colors.blue,
+                        color: Colors.blueGrey, 
                         border: Border.all(color: Colors.white, width: 2),
                         boxShadow: const [BoxShadow(blurRadius: 5, color: Colors.black26)],
                       ),
@@ -488,11 +423,10 @@ class _MapScreenState extends State<MapScreen> {
               children: [
                 Card(
                   elevation: 4,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   child: TextField(
                     controller: _searchController,
                     decoration: InputDecoration(
-                      hintText: "Search NAP Box...",
+                      hintText: "Search LCP, Site, or 'OLT 1'...",
                       prefixIcon: const Icon(Icons.search),
                       suffixIcon: _searchController.text.isNotEmpty 
                         ? IconButton(
@@ -528,10 +462,19 @@ class _MapScreenState extends State<MapScreen> {
                       separatorBuilder: (context, index) => const Divider(height: 1),
                       itemBuilder: (context, index) {
                         var lcp = _searchResults[index];
+                        // Color Code the List Items too!
+                        Color itemColor = _getOltColor(lcp['olt_id']);
                         return ListTile(
-                          title: Text(lcp['lcp_name'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                          title: Text(lcp['lcp_name'], style: TextStyle(fontWeight: FontWeight.bold, color: itemColor)),
                           subtitle: Text(lcp['site_name'], maxLines: 1, overflow: TextOverflow.ellipsis),
-                          leading: Icon(Icons.location_on, color: _getStatusColor(lcp['status'])),
+                          trailing: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: itemColor.withOpacity(0.1), 
+                              borderRadius: BorderRadius.circular(4)
+                            ),
+                            child: Text("OLT ${lcp['olt_id']}", style: TextStyle(fontSize: 10, color: itemColor, fontWeight: FontWeight.bold)),
+                          ),
                           onTap: () => _focusOnLcp(lcp),
                         );
                       },

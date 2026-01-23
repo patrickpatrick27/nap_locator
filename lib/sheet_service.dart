@@ -4,11 +4,14 @@ import 'package:csv/csv.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class SheetService {
+  // Your Google Sheet Export Link (TAB GID included)
   static const String csvUrl = 'https://docs.google.com/spreadsheets/d/1x_IsBXD0Tky4lZwg9lrIgUVR7s_rbfnC0c2L9adOwdI/export?format=csv&gid=1967251366';
-  static const String _cacheKey = 'lcp_data_v16_force_padding'; 
+  
+  static const String _cacheKey = 'lcp_data_v20_master_auto_fix'; 
 
   Future<List<dynamic>> fetchLcpData() async {
     try {
+      // Add timestamp to prevent caching from Google's side
       String uniqueUrl = '$csvUrl&v=${DateTime.now().millisecondsSinceEpoch}';
       print("Downloading Fresh Data...");
 
@@ -20,6 +23,7 @@ class SheetService {
         await prefs.setString(_cacheKey, csvData);
         return _parseMultiColumnCsv(csvData);
       } else {
+        print("Server Error ${response.statusCode}, using local cache.");
         return _loadFromCache();
       }
     } catch (e) {
@@ -38,46 +42,55 @@ class SheetService {
   }
 
   List<dynamic> _parseMultiColumnCsv(String csvString) {
+    // 1. Convert CSV to Rows (Allow invalid rows to prevent total crash)
     List<List<dynamic>> rawRows = const CsvToListConverter(shouldParseNumbers: false, allowInvalid: false).convert(csvString, eol: '\n');
     
     if (rawRows.length < 3) return []; 
 
     Map<String, Map<String, dynamic>> lcpMap = {};
     
-    // 1. DYNAMICALLY FIND ANCHORS
+    // --- 2. THE HEADER HUNTER ---
+    // Scan Row 2 (Index 1) for "OLT PORT" to find the start of each block.
     List<dynamic> headerRow = rawRows[1]; 
-    List<int> anchorColumns = [];
+    List<int> blockStarts = [];
 
-    // Force scan first 50 columns
-    for (int c = 0; c < headerRow.length; c++) {
-      String cell = headerRow[c].toString().toUpperCase().trim();
-      if (cell.contains("LCP NAME")) {
-        // The block starts 1 column before "LCP NAME"
-        int blockStart = c - 1; 
-        if (blockStart >= 0) anchorColumns.add(blockStart);
+    print("Scanning Header Row for Anchors...");
+
+    for (int i = 0; i < headerRow.length; i++) {
+      String cell = headerRow[i].toString().toUpperCase().trim();
+      if (cell == "OLT PORT") {
+        blockStarts.add(i);
       }
     }
 
-    if (anchorColumns.isEmpty) anchorColumns = [0, 15, 30];
-    print("✅ Using Anchors: $anchorColumns");
+    if (blockStarts.isEmpty) {
+      print("⚠️ WARNING: No 'OLT PORT' headers found. Defaulting to [0, 15, 30].");
+      blockStarts = [0, 15, 30]; 
+    } else {
+      print("✅ Found OLT Blocks at columns: $blockStarts");
+    }
 
-    // 2. PROCESS ROWS WITH PADDING
+    // --- 3. PROCESS ROWS WITH VIRTUAL PADDING ---
     for (var i = 2; i < rawRows.length; i++) {
-      // FIX: Force the row to be at least 50 columns long
-      List<dynamic> row = List.from(rawRows[i]); // Make a modifiable copy
-      while (row.length < 50) {
-        row.add(""); // Pad with empty strings
-      }
+      // Create a mutable copy of the row
+      List<dynamic> row = List.from(rawRows[i]);
       
-      for (int k = 0; k < anchorColumns.length; k++) {
-        int startIdx = anchorColumns[k];
-        int oltNum = k + 1;
+      // === THE CODE-SIDE BOOKEND ===
+      // If row is short (e.g., 15 cols), fill it with empty text until it's 60 cols wide.
+      // This ensures we can safely access Column 45+ (OLT 3) without crashing.
+      while (row.length < 60) {
+        row.add(""); 
+      }
+
+      // Process each OLT block found in this row
+      for (int k = 0; k < blockStarts.length; k++) {
+        int startIdx = blockStarts[k];
+        int oltNum = k + 1; // 1, 2, 3
         
         try {
           _processBlock(row, startIdx, oltNum, lcpMap);
         } catch (e) {
-          // If this prints, we know exactly where it failed
-          print("❌ Error Row ${i+1} Block $oltNum: $e");
+          // Ignore empty blocks or bad data in just this block
         }
       }
     }
@@ -93,24 +106,30 @@ class SheetService {
   }
 
   void _processBlock(List<dynamic> row, int startIdx, int oltNum, Map<String, Map<String, dynamic>> lcpMap) {
-    // Safety: Ensure we can read "LCP Name" column
+    // Relative Offsets from "OLT PORT" (StartIdx):
+    // +1: LCP Name
+    // +2: Site Name
+    // +3..+9: Details
+    // +10: NP1-2 (Coordinates)
+
+    // Safety: Even with padding, verify we aren't looking past the absolute end
     if (row.length <= startIdx + 1) return;
 
     String lcpName = row[startIdx + 1].toString().trim();
     
+    // SKIP INVALID ENTRIES
     if (lcpName.isEmpty || 
         lcpName.toUpperCase().contains("VACANT") || 
-        lcpName.toUpperCase().contains("LCP NAME")) {
+        lcpName.toUpperCase().contains("LCP NAME") ||
+        lcpName.toUpperCase() == "0") {
       return;
     }
 
     if (!lcpMap.containsKey(lcpName)) {
-      // Helper to safely get value without crashing
+      // Helper: Safely get string at offset
       String val(int offset) {
         int target = startIdx + offset;
-        if (target < row.length) {
-          return row[target].toString().trim();
-        }
+        if (target < row.length) return row[target].toString().trim();
         return "";
       }
 
@@ -132,7 +151,7 @@ class SheetService {
       };
     }
 
-    // Coordinates
+    // Extract Coordinates (Indices are relative to StartIdx)
     _addNpSafely(lcpMap[lcpName]!, "NP1-2", row, startIdx + 10);
     _addNpSafely(lcpMap[lcpName]!, "NP3-4", row, startIdx + 11);
     _addNpSafely(lcpMap[lcpName]!, "NP5-6", row, startIdx + 12);
@@ -144,6 +163,7 @@ class SheetService {
     String rawValue = row[colIndex].toString();
     if (rawValue.trim().isEmpty || rawValue.toUpperCase().contains("N/A")) return;
 
+    // SANITIZER: Allow only numbers, dots, commas, dashes
     String spacedValue = rawValue.replaceAll(RegExp(r'[^0-9.,-]'), ' ');
     List<String> chunks = spacedValue.split(RegExp(r'[ ,]+'));
     
@@ -158,7 +178,9 @@ class SheetService {
     }
 
     if (lat != null && lng != null) {
-      if (lat > 0 && lat < 90 && lng > 0 && lng < 180) {
+      // Philippines Rough Bounds: Lat 4-22, Long 116-128
+      // If outside this, we reject it (likely bad data)
+      if (lat > 4 && lat < 22 && lng > 116 && lng < 128) {
         lcpObj['nps'].add({'name': npName, 'lat': lat, 'lng': lng});
       }
     }

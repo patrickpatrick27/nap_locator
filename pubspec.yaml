@@ -20,11 +20,13 @@ dependencies:
   flutter_map_cache: ^1.4.0
   dio: ^5.4.0
   dio_cache_interceptor: ^3.5.0
+  dio_cache_interceptor_file_store: ^1.2.3  # <--- NEW: For saving map tiles to disk
+  path_provider: ^2.1.2                     # <--- NEW: To find where to save files
 
-  # --- Google Sheets Integration (NEW) ---
-  http: ^1.2.0               # To download the CSV
-  csv: ^6.0.0                # To read the CSV
-  shared_preferences: ^2.2.2 # To save data for offline use
+  # --- Google Sheets Integration ---
+  http: ^1.2.0               
+  csv: ^6.0.0                
+  shared_preferences: ^2.2.2 
 
   # --- UI Icons ---
   cupertino_icons: ^1.0.8
@@ -36,7 +38,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-
-  # Ensure your JSON data file is registered here as a fallback
   assets:
     - assets/lcp_data.json

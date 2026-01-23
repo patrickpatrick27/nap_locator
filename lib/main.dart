@@ -7,17 +7,31 @@ import 'package:latlong2/latlong.dart';
 import 'package:flutter_map_cache/flutter_map_cache.dart';
 import 'package:dio/dio.dart';
 import 'package:dio_cache_interceptor/dio_cache_interceptor.dart'; 
+// --- NEW IMPORTS FOR OFFLINE STORAGE ---
+import 'package:dio_cache_interceptor_file_store/dio_cache_interceptor_file_store.dart';
+import 'package:path_provider/path_provider.dart';
 
 // IMPORT YOUR SHEET SERVICE
 import 'sheet_service.dart'; 
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const MyApp());
+  
+  // 1. Get a safe folder on the phone to store map tiles
+  final dir = await getApplicationDocumentsDirectory();
+  final cachePath = '${dir.path}/map_tiles';
+  
+  // 2. Create the File Store (Persists on Disk)
+  final cacheStore = FileCacheStore(cachePath);
+
+  // 3. Pass the store to the app
+  runApp(MyApp(cacheStore: cacheStore));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final CacheStore cacheStore; // Store is passed down
+
+  const MyApp({super.key, required this.cacheStore});
 
   @override
   Widget build(BuildContext context) {
@@ -28,13 +42,14 @@ class MyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
       ),
-      home: const MapScreen(),
+      home: MapScreen(cacheStore: cacheStore), // Pass it to MapScreen
     );
   }
 }
 
 class MapScreen extends StatefulWidget {
-  const MapScreen({super.key});
+  final CacheStore cacheStore; // Receive it here
+  const MapScreen({super.key, required this.cacheStore});
 
   @override
   State<MapScreen> createState() => _MapScreenState();
@@ -44,15 +59,15 @@ class _MapScreenState extends State<MapScreen> {
   final MapController _mapController = MapController();
   final TextEditingController _searchController = TextEditingController();
   
-  // Data State
   List<dynamic> _allLcps = [];
   List<dynamic> _searchResults = []; 
   List<Marker> _markers = [];
   dynamic _selectedLcp;
 
-  // Initial Center (Tagaytay)
-  final LatLng _initialCenter = const LatLng(14.1153, 120.9621);
   bool _isSearching = false;
+  bool _isLoading = false; 
+
+  final LatLng _initialCenter = const LatLng(14.1153, 120.9621);
 
   @override
   void initState() {
@@ -61,33 +76,36 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _loadData() async {
-    // 1. Try fetching from Google Sheets (Online) or Cache
+    setState(() => _isLoading = true); 
+
+    // The SheetService handles CSV caching (offline data)
     List<dynamic> data = await SheetService().fetchLcpData();
 
     if (mounted) {
       setState(() {
         _allLcps = data;
+        _isLoading = false; 
         _resetToOverview(); 
       });
       
-      if (data.isNotEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("Map updated! Loaded ${data.length} LCPs."),
-            duration: const Duration(seconds: 2),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(data.isEmpty 
+              ? "Loaded offline data." 
+              : "Map updated! Loaded ${data.length} NAP boxes."),
+          backgroundColor: data.isEmpty ? Colors.orange : Colors.green[700],
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
   }
 
-  // --- NEW COLOR LOGIC FOR OLT BLOCKS ---
   Color _getOltColor(int? oltId) {
     switch (oltId) {
-      case 1: return Colors.blue.shade700;   // OLT 1 (Columns A-N)
-      case 2: return Colors.orange.shade800; // OLT 2 (Columns P-AC)
-      case 3: return Colors.purple.shade700; // OLT 3 (Columns AE-AR)
+      case 1: return Colors.blue.shade700;   
+      case 2: return Colors.orange.shade800; 
+      case 3: return Colors.purple.shade700; 
       default: return Colors.grey;
     }
   }
@@ -96,7 +114,6 @@ class _MapScreenState extends State<MapScreen> {
     return "OLT ${oltId ?? '?'}";
   }
 
-  // --- 1. OVERVIEW MODE ---
   void _resetToOverview() {
     _generateOverviewMarkers(_allLcps);
     setState(() {
@@ -111,8 +128,6 @@ class _MapScreenState extends State<MapScreen> {
     for (var lcp in lcps) {
       if (lcp['nps'] != null && lcp['nps'].isNotEmpty) {
         var firstNp = lcp['nps'][0];
-        
-        // Use OLT Color instead of Status Color
         Color markerColor = _getOltColor(lcp['olt_id']);
 
         markers.add(
@@ -122,11 +137,7 @@ class _MapScreenState extends State<MapScreen> {
             height: 45,
             child: GestureDetector(
               onTap: () => _focusOnLcp(lcp), 
-              child: Icon(
-                Icons.location_on, 
-                color: markerColor, 
-                size: 45
-              ),
+              child: Icon(Icons.location_on, color: markerColor, size: 45),
             ),
           ),
         );
@@ -135,7 +146,6 @@ class _MapScreenState extends State<MapScreen> {
     setState(() => _markers = markers);
   }
 
-  // --- 2. FOCUS MODE (LCP Selected) ---
   void _focusOnLcp(dynamic lcp) {
     FocusScope.of(context).unfocus(); 
     setState(() {
@@ -159,7 +169,7 @@ class _MapScreenState extends State<MapScreen> {
           width: 80, 
           height: 60,
           child: GestureDetector(
-            onTap: () => _showDetailedSheet(lcp), // Open NEW Detail Sheet
+            onTap: () => _showDetailedSheet(lcp), 
             child: Column(
               children: [
                 Container(
@@ -174,11 +184,7 @@ class _MapScreenState extends State<MapScreen> {
                     style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
                   ),
                 ),
-                Icon(
-                  Icons.radio_button_checked,
-                  color: oltColor, 
-                  size: 30
-                ),
+                Icon(Icons.radio_button_checked, color: oltColor, size: 30),
               ],
             ),
           ),
@@ -216,7 +222,6 @@ class _MapScreenState extends State<MapScreen> {
     _showDetailedSheet(lcp);
   }
 
-  // --- 3. NEW DETAILED BOTTOM SHEET ---
   void _showDetailedSheet(dynamic lcp) {
     Color themeColor = _getOltColor(lcp['olt_id']);
     Map<String, dynamic> details = lcp['details'] ?? {};
@@ -243,8 +248,6 @@ class _MapScreenState extends State<MapScreen> {
                 children: [
                   Center(child: Container(width: 40, height: 4, color: Colors.grey[300])),
                   const SizedBox(height: 15),
-                  
-                  // HEADER: LCP Name & OLT Badge
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -266,7 +269,6 @@ class _MapScreenState extends State<MapScreen> {
                   Text(lcp['site_name'], style: TextStyle(color: Colors.grey[600], fontSize: 16)),
                   const Divider(height: 30),
 
-                  // DATA GRID: ODF, Date, Rack, etc.
                   _buildSectionTitle("Patching Details", themeColor),
                   const SizedBox(height: 10),
                   Wrap(
@@ -301,7 +303,6 @@ class _MapScreenState extends State<MapScreen> {
                       },
                     ),
                   )).toList(),
-                  
                   const SizedBox(height: 40),
                 ],
               ),
@@ -322,9 +323,8 @@ class _MapScreenState extends State<MapScreen> {
 
   Widget _buildDetailCard(String label, String? value, {bool isWide = false}) {
     String displayValue = (value == null || value.isEmpty) ? "-" : value;
-    
     return Container(
-      width: isWide ? double.infinity : 100, // Wide items take full width
+      width: isWide ? double.infinity : 100, 
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: Colors.grey[50],
@@ -380,12 +380,13 @@ class _MapScreenState extends State<MapScreen> {
               },
             ),
             children: [
+              // --- OFFLINE TILE LAYER ---
               TileLayer(
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.davepatrick.napboxlocator',
                 tileProvider: CachedTileProvider(
-                  store: MemCacheStore(), 
-                  maxStale: const Duration(days: 30), 
+                  store: widget.cacheStore, // <--- SAVES TO DISK (Offline Mode)
+                  maxStale: const Duration(days: 365), 
                 ),
               ),
               MarkerClusterLayerWidget(
@@ -428,16 +429,23 @@ class _MapScreenState extends State<MapScreen> {
                     decoration: InputDecoration(
                       hintText: "Search LCP, Site, or 'OLT 1'...",
                       prefixIcon: const Icon(Icons.search),
-                      suffixIcon: _searchController.text.isNotEmpty 
-                        ? IconButton(
-                            icon: const Icon(Icons.clear), 
-                            onPressed: () {
-                              _searchController.clear();
-                              _resetToOverview();
-                              _mapController.move(_initialCenter, 13.0);
-                            },
-                          ) 
-                        : null,
+                      suffixIcon: _isLoading 
+                        ? Transform.scale(scale: 0.5, child: const CircularProgressIndicator(strokeWidth: 3))
+                        : (_searchController.text.isNotEmpty 
+                            ? IconButton(
+                                icon: const Icon(Icons.clear), 
+                                onPressed: () {
+                                  _searchController.clear();
+                                  _resetToOverview();
+                                  _mapController.move(_initialCenter, 13.0);
+                                },
+                              ) 
+                            : IconButton(
+                                icon: const Icon(Icons.refresh, color: Colors.blue),
+                                tooltip: "Refresh Data",
+                                onPressed: _loadData, 
+                              )
+                          ),
                       border: InputBorder.none,
                       contentPadding: const EdgeInsets.all(15),
                     ),
@@ -462,7 +470,6 @@ class _MapScreenState extends State<MapScreen> {
                       separatorBuilder: (context, index) => const Divider(height: 1),
                       itemBuilder: (context, index) {
                         var lcp = _searchResults[index];
-                        // Color Code the List Items too!
                         Color itemColor = _getOltColor(lcp['olt_id']);
                         return ListTile(
                           title: Text(lcp['lcp_name'], style: TextStyle(fontWeight: FontWeight.bold, color: itemColor)),

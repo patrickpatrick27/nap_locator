@@ -1,60 +1,96 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
-import 'package:csv/csv.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:googleapis/sheets/v4.dart' as sheets;
+import 'package:googleapis_auth/auth_io.dart';
+import 'package:http/http.dart' as http;
 
 class SheetService {
-  // Your Google Sheet Export Link (TAB GID included)
-  static const String csvUrl = 'https://docs.google.com/spreadsheets/d/1x_IsBXD0Tky4lZwg9lrIgUVR7s_rbfnC0c2L9adOwdI/export?format=csv&gid=1967251366';
+  // 1. The ID of your spreadsheet
+  static const String _spreadsheetId = '1x_IsBXD0Tky4lZwg9lrIgUVR7s_rbfnC0c2L9adOwdI';
   
-  static const String _cacheKey = 'lcp_data_v20_master_auto_fix'; 
+  static const String _cacheKey = 'lcp_data_secure_v3_dynamic'; 
 
   Future<List<dynamic>> fetchLcpData() async {
     try {
-      // Add timestamp to prevent caching from Google's side
-      String uniqueUrl = '$csvUrl&v=${DateTime.now().millisecondsSinceEpoch}';
-      print("Downloading Fresh Data...");
-
-      final response = await http.get(Uri.parse(uniqueUrl)).timeout(const Duration(seconds: 10));
+      print("🔐 Loading credentials...");
       
-      if (response.statusCode == 200) {
-        String csvData = response.body;
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString(_cacheKey, csvData);
-        return _parseMultiColumnCsv(csvData);
+      // 1. Load the JSON key from the secure asset file
+      final jsonString = await rootBundle.loadString('assets/credentials.json');
+      final credentials = ServiceAccountCredentials.fromJson(jsonString);
+
+      // 2. Authenticate as the Service Account
+      final client = await clientViaServiceAccount(credentials, [sheets.SheetsApi.spreadsheetsReadonlyScope]);
+      final sheetsApi = sheets.SheetsApi(client);
+      
+      // --- STEP 1: FIND THE NAME OF THE 3RD TAB ---
+      print("🔎 Finding the 3rd Sheet...");
+      
+      // Fetch spreadsheet metadata (contains tab names)
+      final metadata = await sheetsApi.spreadsheets.get(_spreadsheetId);
+      
+      String targetSheetName;
+      
+      // Check if we have at least 3 sheets (Index 0, 1, 2)
+      if (metadata.sheets != null && metadata.sheets!.length >= 3) {
+        // Get the title of the 3rd sheet (Index 2)
+        targetSheetName = metadata.sheets![2].properties!.title!;
+        print("✅ Found Target Sheet: '$targetSheetName'");
       } else {
-        print("Server Error ${response.statusCode}, using local cache.");
+        print("⚠️ Less than 3 sheets found. Defaulting to 'Sheet1'.");
+        targetSheetName = 'Sheet1';
+      }
+
+      // --- STEP 2: FETCH DATA FROM THAT SPECIFIC TAB ---
+      final String dynamicRange = '$targetSheetName!A:AZ';
+      
+      print("📡 Fetching Data from: $dynamicRange");
+      final response = await sheetsApi.spreadsheets.values.get(_spreadsheetId, dynamicRange);
+      
+      client.close(); // Close the connection
+
+      if (response.values != null && response.values!.isNotEmpty) {
+        // Cache the raw data as a JSON string
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_cacheKey, jsonEncode(response.values));
+
+        return _parseSheetData(response.values!);
+      } else {
+        print("⚠️ Sheet is empty or permission denied.");
         return _loadFromCache();
       }
+
     } catch (e) {
-      print("Network Error: $e");
+      print("❌ Error fetching data: $e");
+      print("👉 Make sure 'nap-finder-bot' has 'Viewer' access to the Sheet.");
       return _loadFromCache();
     }
   }
 
   Future<List<dynamic>> _loadFromCache() async {
     final prefs = await SharedPreferences.getInstance();
-    String? cachedData = prefs.getString(_cacheKey);
-    if (cachedData != null && cachedData.isNotEmpty) {
-      return _parseMultiColumnCsv(cachedData);
+    String? cachedString = prefs.getString(_cacheKey);
+    
+    if (cachedString != null && cachedString.isNotEmpty) {
+      print("📂 Loading from local cache...");
+      // Decode JSON string back to List<List<dynamic>>
+      List<dynamic> decoded = jsonDecode(cachedString);
+      // Ensure strict typing for the parser
+      List<List<dynamic>> rows = decoded.map((row) => (row as List).cast<dynamic>()).toList();
+      return _parseSheetData(rows);
     }
     return []; 
   }
 
-  List<dynamic> _parseMultiColumnCsv(String csvString) {
-    // 1. Convert CSV to Rows (Allow invalid rows to prevent total crash)
-    List<List<dynamic>> rawRows = const CsvToListConverter(shouldParseNumbers: false, allowInvalid: false).convert(csvString, eol: '\n');
-    
+  // --- PARSER LOGIC ---
+  List<dynamic> _parseSheetData(List<List<dynamic>> rawRows) {
     if (rawRows.length < 3) return []; 
 
     Map<String, Map<String, dynamic>> lcpMap = {};
     
-    // --- 2. THE HEADER HUNTER ---
-    // Scan Row 2 (Index 1) for "OLT PORT" to find the start of each block.
+    // 1. Scan Row 2 (Index 1) for "OLT PORT"
     List<dynamic> headerRow = rawRows[1]; 
     List<int> blockStarts = [];
-
-    print("Scanning Header Row for Anchors...");
 
     for (int i = 0; i < headerRow.length; i++) {
       String cell = headerRow[i].toString().toUpperCase().trim();
@@ -64,60 +100,47 @@ class SheetService {
     }
 
     if (blockStarts.isEmpty) {
-      print("⚠️ WARNING: No 'OLT PORT' headers found. Defaulting to [0, 15, 30].");
+      print("⚠️ No 'OLT PORT' headers found. Using defaults.");
       blockStarts = [0, 15, 30]; 
-    } else {
-      print("✅ Found OLT Blocks at columns: $blockStarts");
     }
 
-    // --- 3. PROCESS ROWS WITH VIRTUAL PADDING ---
+    // 2. Process Rows
     for (var i = 2; i < rawRows.length; i++) {
-      // Create a mutable copy of the row
       List<dynamic> row = List.from(rawRows[i]);
       
-      // === THE CODE-SIDE BOOKEND ===
-      // If row is short (e.g., 15 cols), fill it with empty text until it's 60 cols wide.
-      // This ensures we can safely access Column 45+ (OLT 3) without crashing.
+      // Pad row to avoid range errors
       while (row.length < 60) {
         row.add(""); 
       }
 
-      // Process each OLT block found in this row
       for (int k = 0; k < blockStarts.length; k++) {
         int startIdx = blockStarts[k];
-        int oltNum = k + 1; // 1, 2, 3
+        int oltNum = k + 1;
         
         try {
           _processBlock(row, startIdx, oltNum, lcpMap);
         } catch (e) {
-          // Ignore empty blocks or bad data in just this block
+          // Skip bad blocks
         }
       }
     }
 
     var validLcps = lcpMap.values.where((lcp) => lcp['nps'].isNotEmpty).toList();
     validLcps.sort((a, b) => a['lcp_name'].toString().compareTo(b['lcp_name'].toString()));
-
-    print("---------------- PARSING SUMMARY ----------------");
-    print("Successfully mapped ${validLcps.length} LCPs.");
-    print("-------------------------------------------------");
     
+    print("✅ Parsed ${validLcps.length} LCPs.");
     return validLcps;
   }
 
   void _processBlock(List<dynamic> row, int startIdx, int oltNum, Map<String, Map<String, dynamic>> lcpMap) {
-    // Relative Offsets from "OLT PORT" (StartIdx):
-    // +1: LCP Name
-    // +2: Site Name
-    // +3..+9: Details
-    // +10: NP1-2 (Coordinates)
+    // Relative Offsets:
+    // +1: LCP Name, +2: Site, +3..+9: Details, +10: Coords
 
-    // Safety: Even with padding, verify we aren't looking past the absolute end
     if (row.length <= startIdx + 1) return;
 
     String lcpName = row[startIdx + 1].toString().trim();
     
-    // SKIP INVALID ENTRIES
+    // Skip Invalid Rows
     if (lcpName.isEmpty || 
         lcpName.toUpperCase().contains("VACANT") || 
         lcpName.toUpperCase().contains("LCP NAME") ||
@@ -126,7 +149,6 @@ class SheetService {
     }
 
     if (!lcpMap.containsKey(lcpName)) {
-      // Helper: Safely get string at offset
       String val(int offset) {
         int target = startIdx + offset;
         if (target < row.length) return row[target].toString().trim();
@@ -146,12 +168,11 @@ class SheetService {
           'New ODF': val(8),
           'New Port': val(9),
         },
-        'status': 'Migrated',
         'nps': []
       };
     }
 
-    // Extract Coordinates (Indices are relative to StartIdx)
+    // Extract Coords
     _addNpSafely(lcpMap[lcpName]!, "NP1-2", row, startIdx + 10);
     _addNpSafely(lcpMap[lcpName]!, "NP3-4", row, startIdx + 11);
     _addNpSafely(lcpMap[lcpName]!, "NP5-6", row, startIdx + 12);
@@ -163,7 +184,7 @@ class SheetService {
     String rawValue = row[colIndex].toString();
     if (rawValue.trim().isEmpty || rawValue.toUpperCase().contains("N/A")) return;
 
-    // SANITIZER: Allow only numbers, dots, commas, dashes
+    // Cleaner: Replace non-numeric chars (except . and -) with space
     String spacedValue = rawValue.replaceAll(RegExp(r'[^0-9.,-]'), ' ');
     List<String> chunks = spacedValue.split(RegExp(r'[ ,]+'));
     
@@ -178,8 +199,7 @@ class SheetService {
     }
 
     if (lat != null && lng != null) {
-      // Philippines Rough Bounds: Lat 4-22, Long 116-128
-      // If outside this, we reject it (likely bad data)
+      // Philippines Rough Bounds check
       if (lat > 4 && lat < 22 && lng > 116 && lng < 128) {
         lcpObj['nps'].add({'name': npName, 'lat': lat, 'lng': lng});
       }

@@ -11,6 +11,9 @@ dependencies:
   flutter:
     sdk: flutter
 
+  googleapis: ^13.0.0
+  googleapis_auth: ^1.6.0
+
   # --- OpenStreetMap Packages ---
   flutter_map: ^6.0.0
   latlong2: ^0.9.0
@@ -28,8 +31,7 @@ dependencies:
   flutter_compass: ^0.8.0
 
   # --- Google Sheets Integration ---
-  http: ^1.2.0               
-  csv: ^6.0.0                
+  http: ^1.2.0                             
   shared_preferences: ^2.2.2 
 
   # --- UI Icons ---
@@ -44,4 +46,5 @@ flutter:
   uses-material-design: true
   assets:
     - assets/lcp_data.json
+    - assets/credentials.json
     - shorebird.yaml

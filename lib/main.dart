@@ -13,6 +13,9 @@ import 'package:dio_cache_interceptor_file_store/dio_cache_interceptor_file_stor
 import 'package:path_provider/path_provider.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_compass/flutter_compass.dart';
+// --- SHOREBIRD IMPORTS ---
+import 'package:shorebird_code_push/shorebird_code_push.dart';
+import 'package:restart_app/restart_app.dart'; 
 
 import 'sheet_service.dart'; 
 
@@ -56,10 +59,11 @@ class MapScreen extends StatefulWidget {
 class _MapScreenState extends State<MapScreen> {
   final MapController _mapController = MapController();
   final TextEditingController _searchController = TextEditingController();
-  
-  // --- NEW: FOCUS NODE TO CONTROL KEYBOARD ---
   final FocusNode _searchFocusNode = FocusNode(); 
   
+  // --- UPDATED: SHOREBIRD V2 INSTANCE ---
+  final _updater = ShorebirdUpdater();
+
   List<dynamic> _allLcps = [];
   List<dynamic> _searchResults = []; 
   List<Marker> _markers = [];
@@ -80,17 +84,57 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
-    // Start data load AND location services
     _loadData();
     _startLiveLocationUpdates(); 
+    _checkForShorebirdUpdate(); // <--- CHECK FOR APP UPDATES
   }
 
   @override
   void dispose() {
     _positionStream?.cancel(); 
     _compassStream?.cancel(); 
-    _searchFocusNode.dispose(); // Clean up focus node
+    _searchFocusNode.dispose();
     super.dispose();
+  }
+
+  // --- 🆕 UPDATED SHOREBIRD LOGIC (V2 COMPATIBLE) ---
+  Future<void> _checkForShorebirdUpdate() async {
+    try {
+      // 1. Check for active updates
+      final status = await _updater.checkForUpdate();
+      
+      if (status == UpdateStatus.outdated) {
+        print("📲 New Update Found! Downloading...");
+        
+        // 2. Download the update
+        await _updater.update();
+
+        if (mounted) {
+          // 3. Show Popup when ready
+          showDialog(
+            context: context,
+            barrierDismissible: false, // Force them to choose
+            builder: (context) => AlertDialog(
+              title: const Text("Update Ready 🚀"),
+              content: const Text("A new version of the app has been downloaded.\n\nPlease restart the app to apply the changes."),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Restart.restartApp(); 
+                  },
+                  child: const Text("Restart Now"),
+                ),
+              ],
+            ),
+          );
+        }
+      } else {
+        print("✅ App is up to date (Status: $status)");
+      }
+    } catch (error) {
+      // This happens if running in Debug mode or no internet
+      print("Shorebird update check skipped: $error");
+    }
   }
 
   Future<void> _loadData() async {
@@ -104,8 +148,7 @@ class _MapScreenState extends State<MapScreen> {
         _resetToOverview(); 
       });
       
-      // --- FIX 1: VISIBLE LOAD MESSAGE ---
-      // Showing SnackBar AFTER the frame builds to ensure it appears
+      // Data Load Popup
       WidgetsBinding.instance.addPostFrameCallback((_) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -113,7 +156,7 @@ class _MapScreenState extends State<MapScreen> {
                 ? "Could not load data. Check internet." 
                 : "✅ Success! Loaded ${data.length} NAP boxes."),
             backgroundColor: data.isEmpty ? Colors.red : Colors.green[700],
-            duration: const Duration(seconds: 4), // Longer duration
+            duration: const Duration(seconds: 4),
             behavior: SnackBarBehavior.floating,
           ),
         );
@@ -132,7 +175,6 @@ class _MapScreenState extends State<MapScreen> {
       if (permission == LocationPermission.denied) return;
     }
     
-    // 1. Listen to GPS Position
     const LocationSettings locationSettings = LocationSettings(
       accuracy: LocationAccuracy.high,
       distanceFilter: 3, 
@@ -154,7 +196,6 @@ class _MapScreenState extends State<MapScreen> {
       },
     );
 
-    // 2. Listen to Compass Heading
     _compassStream = FlutterCompass.events?.listen((CompassEvent event) {
       double? heading = event.heading;
       if (heading != null && mounted) {
@@ -198,7 +239,6 @@ class _MapScreenState extends State<MapScreen> {
       _isSearching = false;
       _isFollowingUser = false; 
     });
-    // Ensure keyboard is down
     _searchFocusNode.unfocus();
   }
 
@@ -226,9 +266,7 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _focusOnLcp(dynamic lcp) {
-    // Hide keyboard immediately
     _searchFocusNode.unfocus();
-    
     setState(() {
       _isSearching = false;
       _selectedLcp = lcp;
@@ -391,9 +429,6 @@ class _MapScreenState extends State<MapScreen> {
         );
       },
     ).whenComplete(() {
-      // --- FIX 2: PREVENT KEYBOARD POPUP ---
-      // When the sheet closes, we explicitly tell the focus system:
-      // "Do NOT give focus back to the text field."
       _searchFocusNode.unfocus();
     });
   }
@@ -452,7 +487,6 @@ class _MapScreenState extends State<MapScreen> {
       if (_isFollowingUser) {
         setState(() => _isFollowingUser = false);
       }
-      // Ensure keyboard stays hidden on map drag
       _searchFocusNode.unfocus();
     }
   }
@@ -511,7 +545,6 @@ class _MapScreenState extends State<MapScreen> {
                 ),
               ),
               
-              // COMPASS MARKER
               if (_currentLocation != null)
                 MarkerLayer(
                   markers: [
@@ -556,7 +589,7 @@ class _MapScreenState extends State<MapScreen> {
                   elevation: 4,
                   child: TextField(
                     controller: _searchController,
-                    focusNode: _searchFocusNode, // <--- ASSIGN FOCUS NODE
+                    focusNode: _searchFocusNode, 
                     decoration: InputDecoration(
                       hintText: "Search LCP, Site, or 'OLT 1'...",
                       prefixIcon: const Icon(Icons.search),

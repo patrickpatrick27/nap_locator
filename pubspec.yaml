@@ -2,7 +2,7 @@ name: training
 description: "A new Flutter project."
 publish_to: 'none' 
 
-version: 1.0.0+1
+version: 1.0.1+1
 
 environment:
   sdk: ^3.10.3
@@ -13,6 +13,8 @@ dependencies:
 
   googleapis: ^13.0.0
   googleapis_auth: ^1.6.0
+  shorebird_code_push: ^2.0.0
+  restart_app: ^1.0.0
 
   # --- OpenStreetMap Packages ---
   flutter_map: ^6.0.0
@@ -23,11 +25,11 @@ dependencies:
   flutter_map_cache: ^1.4.0
   dio: ^5.4.0
   dio_cache_interceptor: ^3.5.0
-  dio_cache_interceptor_file_store: ^1.2.3  # Offline Storage
-  path_provider: ^2.1.2                     # File Paths
+  dio_cache_interceptor_file_store: ^1.2.3
+  path_provider: ^2.1.2
 
   # --- Location Services (NEW) ---
-  geolocator: ^10.1.0                       # <--- ADD THIS
+  geolocator: ^10.1.0
   flutter_compass: ^0.8.0
 
   # --- Google Sheets Integration ---

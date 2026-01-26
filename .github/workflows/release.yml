@@ -1,12 +1,12 @@
-name: Build and Release APK
+name: Release APK
 
 on:
   push:
     tags:
-      - "v*" # Triggers on tags like v1.0.0
+      - "v*"
 
 permissions:
-  contents: write  # <--- CRITICAL: Allows the robot to upload files to Releases
+  contents: write
 
 jobs:
   build:
@@ -20,43 +20,39 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
+      # 1. OPTIMIZATION: Cache Flutter SDK & Pub Dependencies
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+          cache: true           # <--- Keeps Flutter SDK cached
+          cache-key: 'flutter-:os:-:channel:-:version:-:arch:-:hash:'
+          cache-path: '${{ runner.tool_cache }}/flutter/:channel:-:version:-:arch:'
+          architecture: x64
 
-      # --- RESTORE SECRETS ---
-      - name: Decode Keystore
+      # 2. OPTIMIZATION: Cache Gradle (The biggest time saver for Android)
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-read-only: false # Allow writing to the cache
+
+      - name: Decode Secrets
         run: |
           echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > android/app/upload-keystore.jks
-      
-      - name: Create key.properties
-        run: |
           echo "storePassword=${{ secrets.ANDROID_STORE_PASSWORD }}" > android/key.properties
           echo "keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}" >> android/key.properties
           echo "keyAlias=upload" >> android/key.properties
           echo "storeFile=upload-keystore.jks" >> android/key.properties
-
-      - name: Decode Google Credentials
-        run: |
           mkdir -p assets
           echo "${{ secrets.CREDENTIALS_JSON_BASE64 }}" | base64 --decode > assets/credentials.json
 
-      # --- BUILD ---
-      - name: Get Dependencies
+      - name: Install Dependencies
         run: flutter pub get
 
       - name: Build APK
         run: flutter build apk --release
 
-      # --- DEBUGGING STEP ---
-      # This will show us exactly where the APK landed in the logs
-      - name: List Build Outputs
-        run: ls -R build/app/outputs/flutter-apk/
-
-      # --- RELEASE ---
-      - name: Release to GitHub
-        uses: softprops/action-gh-release@v2  # Updated to v2
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          # This wildcard (*) grabs any APK found in that folder
-          files: build/app/outputs/flutter-apk/*.apk
+          files: build/app/outputs/flutter-apk/app-release.apk

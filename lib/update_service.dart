@@ -12,7 +12,7 @@ class GithubUpdateService {
   static const String _repo = "nap_locator";
   
   // Keep your token here
-  static const String _token = "YOUR_GITHUB_TOKEN_HERE"; 
+  static const String _token = "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"; 
 
   static Future<void> checkForUpdate(BuildContext context) async {
     try {

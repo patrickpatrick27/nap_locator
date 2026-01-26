@@ -182,6 +182,14 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  flutter_app_installer:
+    dependency: "direct main"
+    description:
+      name: flutter_app_installer
+      sha256: "9672fc142a840b1cd86f621e4cc43a6beecb91d1469cf6bb00bbae7fe0b436fd"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.2"
   flutter_compass:
     dependency: "direct main"
     description:
@@ -504,14 +512,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "9.2.4"
-  ota_update:
-    dependency: "direct main"
-    description:
-      name: ota_update
-      sha256: "7ce0af2119458cb7cc3122ecdc4e18ec3c0108162bfab9a4b064d686e1a5fc22"
-      url: "https://pub.dev"
-    source: hosted
-    version: "5.1.0"
   package_info_plus:
     dependency: "direct main"
     description:

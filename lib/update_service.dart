@@ -1,8 +1,11 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:dio/dio.dart'; // Handles the download
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:flutter/material.dart';
-import 'package:ota_update/ota_update.dart'; // IMPORT THIS
+import 'package:path_provider/path_provider.dart'; // Finds where to save the file
+import 'package:flutter_app_installer/flutter_app_installer.dart'; // Triggers the install screen
 
 class GithubUpdateService {
   static const String _owner = "patrickpatrick27";
@@ -30,12 +33,11 @@ class GithubUpdateService {
         String latestVersion = tagName.replaceAll('v', '');
 
         // FIND THE APK URL
-        // GitHub releases have a list of 'assets'. We need the one ending in .apk
         String? apkUrl;
         List<dynamic> assets = data['assets'];
         for (var asset in assets) {
           if (asset['name'].toString().endsWith('.apk')) {
-            apkUrl = asset['browser_download_url']; // This is the direct download link
+            apkUrl = asset['browser_download_url']; 
             break;
           }
         }
@@ -87,43 +89,46 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> {
   String _status = "Ready to download";
   double _progress = 0.0;
   bool _isDownloading = false;
+  
+  // New tools for the download/install process
+  final Dio _dio = Dio();
+  final FlutterAppInstaller _installer = FlutterAppInstaller();
 
-  void _startDownload() {
+  Future<void> _startDownload() async {
     setState(() {
       _isDownloading = true;
       _status = "Downloading...";
     });
 
     try {
-      // THIS IS THE MAGIC LINE
-      OtaUpdate()
-          .execute(widget.apkUrl, destinationFilename: 'nap_finder_update.apk')
-          .listen(
-        (OtaEvent event) {
-          setState(() {
-             // UPDATE STATUS
-             if (event.status == OtaStatus.DOWNLOADING) {
-               _progress = (int.parse(event.value ?? '0')) / 100;
-               _status = "Downloading: ${event.value}%";
-             } else if (event.status == OtaStatus.INSTALLING) {
-               _status = "Installing...";
-               _progress = 1.0; // 100%
-             } else {
-               _status = event.status.toString();
-             }
-          });
-          
-          // Note: When status is INSTALLING, the system install screen opens automatically.
+      // 1. Get a temporary place to save the APK
+      Directory tempDir = await getTemporaryDirectory();
+      String savePath = "${tempDir.path}/update.apk";
+
+      // 2. Download with Dio (gives us progress events)
+      await _dio.download(
+        widget.apkUrl, 
+        savePath,
+        onReceiveProgress: (received, total) {
+          if (total != -1) {
+            setState(() {
+              _progress = received / total;
+              _status = "Downloading: ${( _progress * 100).toStringAsFixed(0)}%";
+            });
+          }
         },
-      ).onError((error) {
-        setState(() {
-          _status = "Error: $error";
-          _isDownloading = false;
-        });
-      });
+      );
+
+      // 3. Install
+      setState(() => _status = "Installing...");
+      await _installer.installApk(filePath: savePath);
+      
+      // Close dialog if the install screen launches successfully
+      if (mounted) Navigator.pop(context);
+
     } catch (e) {
       setState(() {
-        _status = "Failed to start: $e";
+        _status = "Error: $e";
         _isDownloading = false;
       });
     }
@@ -136,7 +141,7 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> {
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text("A new version is available. Click update to download and install automatically."),
+          const Text("A new version is available. Click update to download and install automatically."),
           const SizedBox(height: 20),
           if (_isDownloading) ...[
             LinearProgressIndicator(value: _progress),

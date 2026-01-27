@@ -12,6 +12,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:dio_cache_interceptor/dio_cache_interceptor.dart';
 import 'package:dio_cache_interceptor_file_store/dio_cache_interceptor_file_store.dart';
+import 'package:url_launcher/url_launcher.dart'; // <--- NEW IMPORT
 
 // --- SHOREBIRD IMPORTS ---
 import 'package:shorebird_code_push/shorebird_code_push.dart';
@@ -728,6 +729,8 @@ class DetailedSheet {
                 children: [
                   Center(child: Container(width: 40, height: 4, color: Colors.grey[300])),
                   const SizedBox(height: 15),
+                  
+                  // --- HEADER ---
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -749,6 +752,7 @@ class DetailedSheet {
                   Text(lcp['site_name'], style: TextStyle(color: Colors.grey[600], fontSize: 16)),
                   const Divider(height: 30),
 
+                  // --- DETAILS SECTION ---
                   _buildSectionTitle("Patching Details", themeColor),
                   const SizedBox(height: 10),
                   Wrap(
@@ -765,21 +769,41 @@ class DetailedSheet {
                     ],
                   ),
                   const SizedBox(height: 20),
-                  _buildSectionTitle("Coordinates", themeColor),
-                  ...lcp['nps'].map<Widget>((np) => ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: Icon(Icons.location_on_outlined, color: themeColor),
-                    title: Text(np['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text("${np['lat']}, ${np['lng']}"),
-                    dense: true,
-                    trailing: IconButton(
-                      icon: const Icon(Icons.copy, size: 18),
-                      onPressed: () {
-                        Clipboard.setData(ClipboardData(text: "${np['lat']}, ${np['lng']}"));
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text("Coordinates copied!"), duration: Duration(seconds: 1)),
-                        );
-                      },
+                  
+                  // --- COORDINATES SECTION (UPDATED WITH URL LAUNCHER) ---
+                  _buildSectionTitle("Coordinates & Navigation", themeColor),
+                  ...lcp['nps'].map<Widget>((np) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4.0),
+                    child: ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: CircleAvatar(
+                        backgroundColor: themeColor.withOpacity(0.1),
+                        child: Icon(Icons.location_on, color: themeColor, size: 20),
+                      ),
+                      title: Text(np['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text("${np['lat']}, ${np['lng']}", style: const TextStyle(fontSize: 12)),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // 1. COPY BUTTON
+                          IconButton(
+                            icon: const Icon(Icons.copy, size: 20, color: Colors.grey),
+                            tooltip: "Copy Coordinates",
+                            onPressed: () {
+                              Clipboard.setData(ClipboardData(text: "${np['lat']}, ${np['lng']}"));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text("Coordinates copied! 📋"), duration: Duration(seconds: 1)),
+                              );
+                            },
+                          ),
+                          // 2. GOOGLE MAPS BUTTON
+                          IconButton(
+                            icon: const Icon(Icons.directions, size: 24, color: Colors.blue),
+                            tooltip: "Get Directions",
+                            onPressed: () => _launchMaps(np['lat'], np['lng']),
+                          ),
+                        ],
+                      ),
                     ),
                   )).toList(),
                   const SizedBox(height: 40),
@@ -790,6 +814,20 @@ class DetailedSheet {
         );
       },
     );
+  }
+
+  // --- NEW: LAUNCH GOOGLE MAPS ---
+  static Future<void> _launchMaps(double lat, double lng) async {
+    // Standard Universal Google Maps URL for directions
+    final Uri googleUrl = Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$lat,$lng');
+    
+    try {
+      if (!await launchUrl(googleUrl, mode: LaunchMode.externalApplication)) {
+         throw 'Could not launch Maps';
+      }
+    } catch (e) {
+      print("Error launching map: $e");
+    }
   }
 
   static Color _getOltColor(int? oltId) {

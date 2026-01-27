@@ -7,9 +7,11 @@ import 'package:http/http.dart' as http;
 
 class SheetService {
   static const String _spreadsheetId = '1x_IsBXD0Tky4lZwg9lrIgUVR7s_rbfnC0c2L9adOwdI';
-  static const String _cacheKey = 'lcp_data_multi_sheet_v2_batch'; 
+  
+  // Updated key to force a fresh fetch for OLT Port & EAC001
+  static const String _cacheKey = 'lcp_data_multi_sheet_v3_olt_port_eac'; 
 
-  // List of all tabs to fetch
+  // List of all tabs to fetch (Includes your new EAC001)
   static const List<String> _targetSheetNames = [
     "TGY001", "TGY002", "EAC001",
     "AFC001", "AMC001",
@@ -33,7 +35,7 @@ class SheetService {
       
       print("🚀 FAST MODE: Batch fetching ${_targetSheetNames.length} sheets in ONE call...");
 
-      // Prepare ranges for all sheets at once (e.g. "TGY001!A:AZ")
+      // Prepare ranges for all sheets at once
       List<String> ranges = _targetSheetNames.map((name) => '$name!A:AZ').toList();
 
       try {
@@ -169,6 +171,7 @@ class SheetService {
         'olt_id': oltNum,
         'source_sheet': sheetOrigin,
         'details': {
+          'OLT Port': val(0), // <--- ADDED: Captures "0/1/0" column
           'ODF': val(3),
           'ODF Port': val(4),
           'Date': val(5),

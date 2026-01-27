@@ -76,7 +76,6 @@ class _MainScreenState extends State<MainScreen> {
     _startLiveLocationUpdates();
     _checkForShorebirdUpdate();
     
-    // Check for native updates (APK)
     Future.delayed(const Duration(seconds: 3), () {
       if (mounted) GithubUpdateService.checkForUpdate(context);
     });
@@ -89,24 +88,41 @@ class _MainScreenState extends State<MainScreen> {
     super.dispose();
   }
 
-  // --- OPTIMIZED LOADING STRATEGY ---
+  // --- RESTORED ANIMATION & POP-UP LOGIC ---
   Future<void> _loadData() async {
-    // 1. Load cache IMMEDIATELY (Instant UI)
+    // 1. Force loading state ON to show spinners
+    setState(() => _isLoading = true);
+
+    // 2. Load Cache (Instant UI)
     List<dynamic> cached = await SheetService().loadFromCache();
     if (cached.isNotEmpty && mounted) {
       setState(() {
         _allLcps = cached;
-        _isLoading = false; 
+        // NOTE: We keep _isLoading = true so the user knows it's still syncing
       });
     }
 
-    // 2. Fetch fresh data in background
+    // 3. Fetch Fresh Data (Background)
     List<dynamic> freshData = await SheetService().fetchLcpData();
-    if (mounted && freshData.isNotEmpty) {
+    
+    if (mounted) {
       setState(() {
-        _allLcps = freshData;
+        if (freshData.isNotEmpty) {
+          _allLcps = freshData;
+        }
+        // 4. NOW we stop the animation
         _isLoading = false;
       });
+
+      // 5. Show the Completion Pop-up
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("✅ Sync Complete: ${_allLcps.length} NAPs loaded"),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.green.shade700,
+          duration: const Duration(seconds: 2),
+        ),
+      );
     }
   }
 
@@ -553,7 +569,6 @@ class _MapTabState extends State<MapTab> {
   }
 }
 
-// --- TAB 2: THE LIST ---
 class ListTab extends StatefulWidget {
   final List<dynamic> allLcps;
   final bool isLoading;
@@ -600,6 +615,7 @@ class _ListTabState extends State<ListTab> {
 
   @override
   Widget build(BuildContext context) {
+    // Show spinner if strictly loading AND no data
     if (widget.isLoading && widget.allLcps.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -625,7 +641,17 @@ class _ListTabState extends State<ListTab> {
       appBar: AppBar(
         title: const Text("All NAP Boxes"),
         actions: [
-          IconButton(onPressed: widget.onRefresh, icon: const Icon(Icons.refresh))
+          // --- SPINNER IN APP BAR ---
+          widget.isLoading 
+          ? const Padding(
+              padding: EdgeInsets.all(16.0),
+              child: SizedBox(
+                width: 18, 
+                height: 18, 
+                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blueGrey),
+              ),
+            )
+          : IconButton(onPressed: widget.onRefresh, icon: const Icon(Icons.refresh))
         ],
       ),
       body: ListView.builder(
@@ -752,13 +778,15 @@ class DetailedSheet {
                     spacing: 10,
                     runSpacing: 10,
                     children: [
-                      _buildDetailCard("ODF", details['ODF']),
-                      _buildDetailCard("ODF Port", details['ODF Port']),
-                      _buildDetailCard("New ODF", details['New ODF']),
-                      _buildDetailCard("New Port", details['New Port']),
-                      _buildDetailCard("Rack ID", details['Rack ID']),
-                      _buildDetailCard("Date/NMP", details['Date'], isWide: true),
-                      _buildDetailCard("Distance", details['Distance']),
+                      // --- TAPPABLE CARDS ---
+                      _buildDetailCard(context, "OLT Port", details['OLT Port']), 
+                      _buildDetailCard(context, "ODF", details['ODF']),
+                      _buildDetailCard(context, "ODF Port", details['ODF Port']),
+                      _buildDetailCard(context, "New ODF", details['New ODF']),
+                      _buildDetailCard(context, "New Port", details['New Port']),
+                      _buildDetailCard(context, "Rack ID", details['Rack ID']),
+                      _buildDetailCard(context, "Date/NMP", details['Date'], isWide: true),
+                      _buildDetailCard(context, "Distance", details['Distance']),
                     ],
                   ),
                   const SizedBox(height: 20),
@@ -835,23 +863,45 @@ class DetailedSheet {
     ]);
   }
 
-  static Widget _buildDetailCard(String label, String? value, {bool isWide = false}) {
+  static Widget _buildDetailCard(BuildContext context, String label, String? value, {bool isWide = false}) {
     String displayValue = (value == null || value.isEmpty) ? "-" : value;
-    return Container(
-      width: isWide ? double.infinity : 100, 
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: Colors.grey[50],
+    
+    return Material( 
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () {
+          Clipboard.setData(ClipboardData(text: displayValue));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("$label copied! 📋"), 
+              duration: const Duration(seconds: 1),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        },
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.grey[200]!),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label, style: const TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 2),
-          Text(displayValue, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500), maxLines: 2, overflow: TextOverflow.ellipsis),
-        ],
+        child: Container(
+          width: isWide ? double.infinity : 100, 
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: Colors.grey[50],
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.grey[200]!),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: const TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 2),
+              Text(
+                displayValue, 
+                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500), 
+                maxLines: 2, 
+                overflow: TextOverflow.ellipsis
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

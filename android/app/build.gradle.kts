@@ -29,7 +29,7 @@ android {
     }
 
     signingConfigs {
-        // 2. Only create the "release" config IF the key properties were loaded found
+        // 2. Only create the "release" config IF the key properties were loaded
         if (keystoreProperties["keyAlias"] != null) {
             create("release") {
                 keyAlias = keystoreProperties["keyAlias"] as String
@@ -51,9 +51,22 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            // --- DEBUG CONFIGURATION ---
+            // 1. Changes ID to "com.example.training.debug" so it installs separately from release
+            applicationIdSuffix = ".debug"
+            
+            // 2. Changes App Name to "NAP Finder (Dev)" so you can tell them apart
+            resValue("string", "app_name", "NAP Finder (Dev)")
+        }
+
         getByName("release") {
-            // 4. Safe Signing Config Assignment
-            // Only sign if the "release" config was actually created above
+            // --- RELEASE CONFIGURATION ---
+            // 1. Keeps original ID "com.example.training"
+            // 2. Sets App Name to real name "NAP Finder"
+            resValue("string", "app_name", "NAP Finder")
+
+            // 3. Safe Signing Config Assignment
             if (signingConfigs.findByName("release") != null) {
                 signingConfig = signingConfigs.getByName("release")
             }

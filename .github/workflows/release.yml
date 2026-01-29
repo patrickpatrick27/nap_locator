@@ -3,7 +3,7 @@ name: Build & Release APK
 on:
   push:
     tags:
-      - 'v*' # Triggers on tags like v1.0.13, v1.0.14, etc.
+      - 'v*'
 
 jobs:
   build:
@@ -28,26 +28,29 @@ jobs:
       - name: Get Dependencies
         run: flutter pub get
 
-      # --- KEYSTORE SETUP (Required for Release Build) ---
+      # --- STEP 1: RESTORE CREDENTIALS.JSON ---
+      # This recreates the file so Flutter can find it during build
+      - name: Create Credentials File
+        run: |
+          mkdir -p assets
+          echo "${{ secrets.CREDENTIALS_JSON_BASE64 }}" | base64 --decode > assets/credentials.json
+
+      # --- STEP 2: KEYSTORE SETUP ---
       - name: Create Key Files
         run: |
           echo "${{ secrets.KEY_PROPERTIES }}" > android/key.properties
           echo "${{ secrets.UPLOAD_KEYSTORE_BASE64 }}" | base64 --decode > android/app/upload-keystore.jks
 
-      # --- BUILD COMMAND ---
+      # --- STEP 3: BUILD ---
       - name: Build Release APK
         run: flutter build apk --release
 
-      # --- RENAMING STEP ---
-      - name: Rename APK to NAP Finder (vTag)
+      - name: Rename APK
         run: |
-          # This takes the default 'app-release.apk' and renames it using the tag (github.ref_name)
           mv build/app/outputs/flutter-apk/app-release.apk "NAP Finder (${{ github.ref_name }}).apk"
 
-      # --- UPLOAD TO GITHUB RELEASES ---
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          # This tells GitHub to look for the NEW filename
           files: "NAP Finder (${{ github.ref_name }}).apk"
           generate_release_notes: true

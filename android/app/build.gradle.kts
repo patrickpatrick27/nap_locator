@@ -7,7 +7,6 @@ plugins {
 import java.util.Properties
 import java.io.FileInputStream
 
-// 1. Load the Key Properties safely
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
@@ -30,26 +29,20 @@ android {
 
     signingConfigs {
         create("release") {
-            // --- SAFETY LOCK 1: FAIL IF KEYS MISSING ---
-            // If GitHub Actions can't find the key file, STOP the build.
-            // This prevents "Package Invalid" errors caused by unsigned APKs.
+            // --- STRICT CHECK: CRASH IF KEYS MISSING ---
             if (!keystorePropertiesFile.exists()) {
-                 println("⚠️ WARNING: key.properties not found. Release build will NOT be signed.")
-                 // Note: We don't crash here so you can still run 'flutter run --release' locally without keys if needed.
-                 // But for GitHub, this usually means the secret failed.
+                 throw GradleException("❌ BUILD STOPPED: key.properties not found! Check your GitHub Secrets.")
             }
             
-            // Only try to read keys if the file exists
-            if (keystoreProperties["keyAlias"] != null) {
-                keyAlias = keystoreProperties["keyAlias"] as String
-                keyPassword = keystoreProperties["keyPassword"] as String
-                storeFile = file(keystoreProperties["storeFile"] as String)
-                storePassword = keystoreProperties["storePassword"] as String
-                
-                // --- SAFETY LOCK 2: FORCE V1 & V2 SIGNING ---
-                enableV1Signing = true
-                enableV2Signing = true
-            }
+            // Force load keys. If any are missing, it will crash and tell us which one.
+            keyAlias = keystoreProperties.getProperty("keyAlias") ?: throw GradleException("❌ Missing keyAlias")
+            keyPassword = keystoreProperties.getProperty("keyPassword") ?: throw GradleException("❌ Missing keyPassword")
+            storeFile = file(keystoreProperties.getProperty("storeFile") ?: throw GradleException("❌ Missing storeFile"))
+            storePassword = keystoreProperties.getProperty("storePassword") ?: throw GradleException("❌ Missing storePassword")
+            
+            // Valid Signatures for Android 11+
+            enableV1Signing = true
+            enableV2Signing = true
         }
     }
 
@@ -63,7 +56,7 @@ android {
 
     buildTypes {
         getByName("debug") {
-            // Re-adding this so you can have both apps installed at once
+            // Your separation logic
             applicationIdSuffix = ".debug"
             resValue("string", "app_name", "NAP Finder (Dev)")
         }
@@ -71,7 +64,7 @@ android {
         getByName("release") {
             resValue("string", "app_name", "NAP Finder")
             
-            // Force the release config. 
+            // FORCE the release config. Do not use 'if'.
             signingConfig = signingConfigs.getByName("release")
             
             isMinifyEnabled = false
